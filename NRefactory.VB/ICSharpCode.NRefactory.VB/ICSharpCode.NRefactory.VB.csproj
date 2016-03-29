@@ -16,6 +16,8 @@
     <AssemblyOriginatorKeyFile>..\..\NRefactory\ICSharpCode.NRefactory.snk</AssemblyOriginatorKeyFile>
     <DelaySign>False</DelaySign>
     <AssemblyOriginatorKeyMode>File</AssemblyOriginatorKeyMode>
+    <TargetFrameworkVersion>v4.5.2</TargetFrameworkVersion>
+    <TargetFrameworkProfile />
   </PropertyGroup>
   <PropertyGroup Condition=" '$(Platform)' == 'AnyCPU' ">
     <PlatformTarget>AnyCPU</PlatformTarget>
@@ -35,6 +37,12 @@
     <Optimize>True</Optimize>
     <CheckForOverflowUnderflow>False</CheckForOverflowUnderflow>
     <DefineConstants>TRACE</DefineConstants>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)' == 'Debug|AnyCPU'">
+    <Prefer32Bit>false</Prefer32Bit>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)' == 'Release|AnyCPU'">
+    <Prefer32Bit>false</Prefer32Bit>
   </PropertyGroup>
   <ItemGroup>
     <Reference Include="System" />
@@ -185,11 +193,7 @@
     <Compile Include="VBParser.cs" />
     <Compile Include="Visitors\CSharpToVBConverterVisitor.cs" />
   </ItemGroup>
-  <ItemGroup>
-    <Folder Include="Ast\" />
-    <Folder Include="Lexer\" />
-    <Folder Include="PrettyPrinter\" />
-  </ItemGroup>
+  <ItemGroup />
   <ItemGroup>
     <None Include="Lexer\ExpressionFinder.atg">
       <Generator>CocoParserGenerator</Generator>

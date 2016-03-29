@@ -17,6 +17,8 @@
 // DEALINGS IN THE SOFTWARE.
 
 using System;
+using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Threading;
 using ICSharpCode.Decompiler;
 using ICSharpCode.ILSpy.Options;
@@ -60,6 +62,18 @@ namespace ICSharpCode.ILSpy
 		/// This state is used to restore test view's state when decompilation is started by Go Back/Forward action.
 		/// </remarks>
 		public TextView.DecompilerTextViewState TextViewState { get; set; }
+
+        /// <summary>
+        /// TODO - should switch Delphi transforms on/off
+        /// </summary>
+        public bool DelphiMode { get; set; }
+
+        /// <summary>
+        /// Analyse Delphi assembly
+        /// </summary>
+        public bool DelphiAnalysis { get; set; }
+
+        public ConcurrentDictionary<string, int> DelphiStats = new ConcurrentDictionary<string, int>(); 
 
 		public DecompilationOptions()
 		{

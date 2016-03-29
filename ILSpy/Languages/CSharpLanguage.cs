@@ -20,9 +20,11 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.ComponentModel.Composition;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Resources;
+using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using System.Xml;
@@ -31,6 +33,7 @@ using ICSharpCode.Decompiler;
 using ICSharpCode.Decompiler.Ast;
 using ICSharpCode.Decompiler.Ast.Transforms;
 using ICSharpCode.ILSpy.Options;
+using ICSharpCode.ILSpy.TextView;
 using ICSharpCode.ILSpy.XmlDoc;
 using ICSharpCode.NRefactory.CSharp;
 using Mono.Cecil;
@@ -224,7 +227,7 @@ namespace ICSharpCode.ILSpy
 						astBuilder.SyntaxTree.InsertChildBefore(insertionPoint, new Comment(msg[i], CommentType.Documentation), Roles.Comment);
 				}
 			}
-			astBuilder.GenerateCode(output);
+		    astBuilder.GenerateCode(output);
 		}
 
 		public static string GetPlatformDisplayName(ModuleDefinition module)
@@ -282,6 +285,12 @@ namespace ICSharpCode.ILSpy
 		
 		public override void DecompileAssembly(LoadedAssembly assembly, ITextOutput output, DecompilationOptions options)
 		{
+		    if (options.DelphiAnalysis)
+		    {
+                AnalyseCodeFilesInProject(assembly.ModuleDefinition, options, output);
+		        return;
+		    }
+
 			if (options.FullDecompilation && options.SaveAsProjectDirectory != null) {
 				HashSet<string> directories = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 				var files = WriteCodeFilesInProject(assembly.ModuleDefinition, options, directories).ToList();
@@ -315,8 +324,8 @@ namespace ICSharpCode.ILSpy
 				using (options.FullDecompilation ? null : LoadedAssembly.DisableAssemblyLoad()) {
 					AstBuilder codeDomBuilder = CreateAstBuilder(options, currentModule: assembly.ModuleDefinition);
 					codeDomBuilder.AddAssembly(assembly.ModuleDefinition, onlyAssemblyLevel: !options.FullDecompilation);
-					codeDomBuilder.RunTransformations(transformAbortCondition);
-					codeDomBuilder.GenerateCode(output);
+                    codeDomBuilder.RunTransformations(transformAbortCondition);
+                    codeDomBuilder.GenerateCode(output);					    					
 				}
 			}
 		}
@@ -446,6 +455,56 @@ namespace ICSharpCode.ILSpy
 		}
 		#endregion
 
+        void AnalyseCodeFile(TypeDefinition type, ModuleDefinition module, DecompilationOptions options)
+        {
+            try
+            {
+                Trace.TraceInformation(type.FullName);
+                AstBuilder astBuilder = CreateAstBuilder(options, currentModule: module);
+                astBuilder.AddType(type);
+                astBuilder.RunTransformations(transformAbortCondition);
+
+                if (options.DelphiAnalysis)
+                {
+                    var delphi = new AnalyzeMethodInvokation();
+                    delphi.Run(astBuilder.SyntaxTree);
+                    delphi.MergeStats(options.DelphiStats);
+#if MORE
+                    // TODO - separate run?
+                    var magic = new AnalyzeMagicConstants();
+                    magic.Run(astBuilder.SyntaxTree);
+                    magic.MergeStats(options.DelphiStats);
+#endif
+                }
+                Trace.TraceInformation("done: " + type.FullName);
+            }
+            catch (Exception ex)
+            {
+                Trace.TraceError(ex.Message);
+            }
+        }
+        
+        void AnalyseCodeFilesInProject(ModuleDefinition module, DecompilationOptions options, ITextOutput output)
+        {
+            var modules = module.Types.Where(t => IncludeTypeWhenDecompilingProject(t, options) //&& !t.FullName.StartsWith("Borland.")
+                ).ToList();
+            AstMethodBodyBuilder.ClearUnhandledOpcodes();
+#if PARALLEL
+            // TODO this seems slower and doesn't terminate
+            Parallel.ForEach(modules, new ParallelOptions { MaxDegreeOfParallelism = Environment.ProcessorCount },
+                             type => AnalyseCodeFile(type, module, options));
+#else
+            modules.ForEach(type => AnalyseCodeFile(type, module, options));
+#endif
+            AstMethodBodyBuilder.PrintNumberOfUnhandledOpcodes();
+            AnalyzeMethodInvokation.Output(options.DelphiStats, output);
+#if DEBUG2
+
+            var name = DecompilerTextView.CleanUpName(module.Assembly.Name.Name);
+            File.WriteAllText(name + ".csv", sb.ToString());
+#endif
+        }
+
 		#region WriteCodeFilesInProject
 		bool IncludeTypeWhenDecompilingProject(TypeDefinition type, DecompilationOptions options)
 		{
@@ -453,7 +512,9 @@ namespace ICSharpCode.ILSpy
 				return false;
 			if (type.Namespace == "XamlGeneratedNamespace" && type.Name == "GeneratedInternalTypeHelper")
 				return false;
-			return true;
+            if (type.Namespace.StartsWith("Borland.") || type.Namespace == "$compiler_internal$")
+                return false;
+            return true;
 		}
 
 		IEnumerable<Tuple<string, string>> WriteAssemblyInfo(ModuleDefinition module, DecompilationOptions options, HashSet<string> directories)
@@ -484,7 +545,46 @@ namespace ICSharpCode.ILSpy
 						return file;
 					} else {
 						string dir = TextView.DecompilerTextView.CleanUpName(type.Namespace);
-						if (directories.Add(dir))
+					    if (!Char.IsLetterOrDigit(type.Name[0]))
+					    {
+					        dir += "/_internal";
+					    }
+                        else if (type.IsEnum)
+					    {
+					        dir += "/Enums";
+					    }
+#if MORE
+                        else if (type.Name.Contains("List"))
+                        {
+                            dir += "/Lists";
+                        }
+                        else if (type.IsSubclassOf("Shareit", "TDataObject"))
+                        {
+                            dir += "/DataObject";
+                        }
+#endif
+                        else if (type.IsClass)
+                        {
+                            if (type.Name.StartsWith("E"))
+                                dir += "/Exceptions";
+                            if (type.Name.StartsWith("DR"))
+                                dir += "/DR";
+                            if (type.Name.StartsWith("TDyn"))
+                                dir += "/Dyn";
+                            if (type.Name.StartsWith("Tdm"))
+                                dir += "/DataMod";
+                            if (type.Name.StartsWith("Record"))
+                                dir += "/_internal";
+                        }
+                        else if (type.IsClass)
+                        {
+                        }
+                        else if (type.IsInterface)
+                        {
+                            dir += "/Interfaces";
+                        }
+
+					    if (directories.Add(dir))
 							Directory.CreateDirectory(Path.Combine(options.SaveAsProjectDirectory, dir));
 						return Path.Combine(dir, file);
 					}
@@ -503,7 +603,7 @@ namespace ICSharpCode.ILSpy
 						codeDomBuilder.GenerateCode(new PlainTextOutput(w));
 					}
 				});
-			AstMethodBodyBuilder.PrintNumberOfUnhandledOpcodes();
+			AstMethodBodyBuilder.PrintNumberOfUnhandledOpcodes();			
 			return files.Select(f => Tuple.Create("Compile", f.Key)).Concat(WriteAssemblyInfo(module, options, directories));
 		}
 		#endregion

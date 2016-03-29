@@ -357,9 +357,9 @@ namespace ICSharpCode.ILSpy.TextView
 				activeCustomElementGenerators.Add(elementGenerator);
 			}
 			
-			Debug.WriteLine("  Set-up: {0}", w.Elapsed); w.Restart();
+			//Debug.WriteLine("  Set-up: {0}", w.Elapsed); w.Restart();
 			textEditor.Document = textOutput.GetDocument();
-			Debug.WriteLine("  Assigning document: {0}", w.Elapsed); w.Restart();
+			//Debug.WriteLine("  Assigning document: {0}", w.Elapsed); w.Restart();
 			if (textOutput.Foldings.Count > 0) {
 				if (state != null) {
 					state.RestoreFoldings(textOutput.Foldings);
@@ -368,7 +368,7 @@ namespace ICSharpCode.ILSpy.TextView
 				}
 				foldingManager = FoldingManager.Install(textEditor.TextArea);
 				foldingManager.UpdateFoldings(textOutput.Foldings.OrderBy(f => f.StartOffset), -1);
-				Debug.WriteLine("  Updating folding: {0}", w.Elapsed); w.Restart();
+				//Debug.WriteLine("  Updating folding: {0}", w.Elapsed); w.Restart();
 			}
 		}
 		#endregion
@@ -720,6 +720,8 @@ namespace ICSharpCode.ILSpy.TextView
 			if (position == null)
 				return null;
 			int offset = textEditor.Document.GetOffset(position.Value.Location);
+
+            if (referenceElementGenerator.References == null) return null;
 			return referenceElementGenerator.References.FindSegmentsContaining(offset).FirstOrDefault();
 		}
 		

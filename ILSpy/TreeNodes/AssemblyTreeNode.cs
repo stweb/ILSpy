@@ -378,4 +378,45 @@ namespace ICSharpCode.ILSpy.TreeNodes
 			MainWindow.Instance.CurrentAssemblyList.RefreshSave();
 		}
 	}
+
+    [ExportContextMenuEntryAttribute(Header = "_Analyse Invoke", Icon = "images/Find.png")]
+    sealed class ExportAssembly : IContextMenuEntry
+    {
+        public bool IsVisible(TextViewContext context)
+        {
+            if (context.SelectedTreeNodes == null)
+                return false;
+            return context.SelectedTreeNodes.All(n => n is AssemblyTreeNode);
+        }
+
+        public bool IsEnabled(TextViewContext context)
+        {
+            return true;
+        }
+
+        public void Execute(TextViewContext context)
+        {
+            if (context.SelectedTreeNodes == null)
+                return;
+
+            var opt = new DecompilationOptions {DelphiAnalysis = true};
+            try
+            {
+                var output = new AvalonEditTextOutput();
+                foreach (var node in context.SelectedTreeNodes)
+                {
+                    var atn = node as AssemblyTreeNode;
+                    if (atn != null)
+                        atn.Decompile(atn.Language, output, opt);
+                }
+                
+                if (context.TextView != null)
+                    context.TextView.ShowText(output);
+            }
+            catch (Exception e)
+            {
+                Console.WriteLine(e);
+            }
+        }
+    }
 }

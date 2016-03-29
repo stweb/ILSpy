@@ -17,23 +17,18 @@
 // DEALINGS IN THE SOFTWARE.
 
 using System;
-using System.Collections.Concurrent;
+using System.Collections;
 using System.Collections.Generic;
-using System.Collections.ObjectModel;
 using System.Diagnostics;
-using System.IO;
 using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
-using System.Threading;
-
-using ICSharpCode.Decompiler;
 using ICSharpCode.Decompiler.Ast.Transforms;
 using ICSharpCode.Decompiler.ILAst;
 using ICSharpCode.NRefactory.CSharp;
+using ICSharpCode.NRefactory.TypeSystem.Implementation;
 using ICSharpCode.NRefactory.Utils;
 using Mono.Cecil;
-using Mono.Cecil.Cil;
 
 namespace ICSharpCode.Decompiler.Ast
 {
@@ -63,6 +58,34 @@ namespace ICSharpCode.Decompiler.Ast
 			this.context = context;
 			this.DecompileMethodBodies = true;
 		}
+
+        private static ArrayList delphiMethods = new ArrayList { "ClassType", "ClassName", "ClassNameIs", "ClassParent", "ClassInfo", "InheritsFrom", "MethodAddress", "FieldAddress", "Dispatch", "Destroy", "Free", "MethodName" };
+
+	    private static ArrayList delphiComponentMethods = new ArrayList
+	    {
+	        "Assign",
+	        "ChangeComponentName",
+	        "DestroyComponents",
+	        "Destroying",
+	        "ExecuteAction",
+	        "FindComponent",
+	        "FreeNotification",
+	        "GetEnumerator",
+	        "GetNamePath",
+	        "GetParentComponent",
+	        "GetRootDesigner",
+	        "HasParent",
+	        "InsertComponent",
+	        "IsImplementorOf",
+	        "ReferenceInterface",
+	        "RemoveComponent",
+	        "RemoveFreeNotification",
+	        "SetComponentParent",
+	        "SetParentComponent",
+	        "SetSubComponent",
+	        "UpdateAction",
+	        "stored_Name"
+	    };
 		
 		public static bool MemberIsHidden(MemberReference member, DecompilerSettings settings)
 		{
@@ -72,23 +95,96 @@ namespace ICSharpCode.Decompiler.Ast
 					return true;
 				if (settings.AnonymousMethods && method.HasGeneratedName() && method.IsCompilerGenerated())
 					return true;
+
+		        // hide Delphi injected methods
+		        if (delphiMethods.Contains(method.Name))
+		            return true;
+
+                if (method.IsConstructor && method.Parameters.Any(p => p.Name.Contains("Dummy")))
+                {
+                    if (!method.HasBody) return true;
+
+                    if (method.Body.Instructions.Count == method.Parameters.Count + 3)
+                        return true;
+
+                    return false;
+                }
+
+                if (method.IsStatic && method.IsConstructor && method.HasBody && method.Body.Instructions.Count == 3)
+		        {
+                    // Delphi static class constructor calling MetaClass constructor
+		            var op = method.Body.Instructions[1].Operand;
+		            return op != null && op.ToString().Contains("System.Runtime.CompilerServices.RuntimeHelpers::RunClassConstructor");
+		        }
+
+                if (method.IsConstructor && method.HasBody && method.Body.Instructions.Count == 3)
+		        {
+                    // constructor that simply calls base ctor
+                    var op = method.Body.Instructions[1].Operand;
+                    return op != null && op.ToString().Contains("ctor");
+		        }
+
+                // : Component, IDisposable, 36ClassesTComponentHelper, 82ClassesTPersistentHelper
+                var clazz = member.DeclaringType as Mono.Cecil.TypeDefinition;
+                if (clazz != null && clazz.BaseType != null && clazz.BaseType.FullName.Equals("System.ComponentModel.Component"))
+                {
+                    return //method.IsFamilyOrAssembly // aka protected internal for Delphi TComponent descendant
+                           delphiComponentMethods.Contains(method.Name);
+		        }
+                else if (clazz != null && clazz.BaseType != null && clazz.BaseType.FullName.Equals("System.Exception"))
+                {
+                    return method.Name.StartsWith("Create");
+                }
+
+			    if (method.ReturnType.FullName.Contains("/@Meta"))
+			    {
+			        return true; // Delphi meta class -> could use Type but more changes required in Body
+			    }
 			}
 
 			TypeDefinition type = member as TypeDefinition;
 			if (type != null) {
 				if (type.DeclaringType != null) {
+                    // nested types
 					if (settings.AnonymousMethods && IsClosureType(type))
 						return true;
 					if (settings.YieldReturn && YieldReturnDecompiler.IsCompilerGeneratorEnumerator(type))
 						return true;
 					if (settings.AsyncAwait && AsyncDecompiler.IsCompilerGeneratedStateMachine(type))
 						return true;
+
+				    if (type.Name.StartsWith("@Meta")) // Delphi
+				    {
+                        if (type.Methods.Count <= 4) // ignore minimal meta class
+                            return true;
+
+				        if (type.Methods.Any(m => !m.IsConstructor && !m.Name.StartsWith("Create")))
+				            return true;
+
+                        return false;
+				    }
+				    if (type.IsSealed && type.FullName.Contains(".Units.")) // Delphi
+				    {
+				        return type.Name.Equals("$map$"); // Delphi static Unit class mapping
+				    }
+                    if (type.IsEnum && type.Fields.Count <= 2) 
+                    {
+                        return true; // dummy parameter enum
+                    }
+
 				} else if (type.IsCompilerGenerated()) {
 					if (type.Name.StartsWith("<PrivateImplementationDetails>", StringComparison.Ordinal))
 						return true;
 					if (type.IsAnonymousType())
 						return true;
 				}
+                else if (type.IsSealed && type.FullName.Contains(".Units.")) // Delphi
+                {
+                    if (!type.HasMethods)
+                        return true;
+
+                    return (type.Methods.Count <= 2); // ignore minimal unit class
+                }
 			}
 			
 			FieldDefinition field = member as FieldDefinition;
@@ -105,6 +201,10 @@ namespace ICSharpCode.Decompiler.Ast
 				if (settings.AutomaticEvents && field.DeclaringType.Events.Any(ev => ev.Name == field.Name))
 					return true;
 			}
+
+            if (member.FullName.StartsWith("$compiler_internal$."))
+                return true; // delphi
+
 			
 			return false;
 		}
@@ -353,7 +453,7 @@ namespace ICSharpCode.Decompiler.Ast
 				foreach (var m in typeDef.Methods) {
 					if (m.Name == "Invoke") {
 						dd.ReturnType = ConvertType(m.ReturnType, m.MethodReturnType);
-						dd.Parameters.AddRange(MakeParameters(m));
+						dd.Parameters.AddRange(MakeParameters(m));  
 						ConvertAttributes(dd, m.MethodReturnType, m.Module);
 					}
 				}
@@ -364,7 +464,8 @@ namespace ICSharpCode.Decompiler.Ast
 					astType.AddChild(ConvertType(typeDef.BaseType), Roles.BaseType);
 				}
 				foreach (var i in typeDef.Interfaces)
-					astType.AddChild(ConvertType(i), Roles.BaseType);
+                    if (!i.FullName.StartsWith("Borland.") && (i.FullName != "System.IDisposable"))
+					    astType.AddChild(ConvertType(i), Roles.BaseType);
 				
 				AddTypeMembers(astType, typeDef);
 
@@ -754,7 +855,11 @@ namespace ICSharpCode.Decompiler.Ast
 			
 			// Add methods
 			foreach(MethodDefinition methodDef in typeDef.Methods) {
-				if (MemberIsHidden(methodDef, context.Settings)) continue;
+			    if (MemberIsHidden(methodDef, context.Settings))
+			    {
+                    //Trace.TraceInformation("hide: " + methodDef.FullName);
+			        continue;
+			    };
 				
 				if (methodDef.IsConstructor)
 					astType.Members.Add(CreateConstructor(methodDef));
@@ -959,11 +1064,43 @@ namespace ICSharpCode.Decompiler.Ast
 			EntityDeclaration member = astProp;
 			if(propDef.IsIndexer())
 				member = ConvertPropertyToIndexer(astProp, propDef);
-			if(!accessor.HasOverrides && !accessor.DeclaringType.IsInterface)
+            else if (propDef.HasParameters)
+            {
+                // indexed property - not supported in C#
+                EliminateProperty(astProp, propDef);
+                return null;
+            }
+		    if(!accessor.HasOverrides && !accessor.DeclaringType.IsInterface)
 				if (accessor.IsVirtual == accessor.IsNewSlot)
 					SetNewModifier(member);
 			return member;
 		}
+
+        void EliminateProperty(PropertyDeclaration astProp, PropertyDefinition propDef)
+        {
+            // remember mapping for ReplaceMethodCallsWithOperators processing
+            var proptype = propDef.DeclaringType.FullName;
+
+            // find name of getter method
+            if (propDef.GetMethod != null)
+            {
+                var grs = astProp.Getter.Body.Statements.FirstOrDefault() as ReturnStatement;
+                var gie = grs.Expression as InvocationExpression;
+                var gta = gie.Target as MemberReferenceExpression;
+                var getter = gta.MemberName;
+                DecompilerContext.EliminatedProps[proptype + ".get_" + propDef.Name] = getter;
+            }
+
+            // find name of setter method
+            if (propDef.SetMethod != null)
+            {
+                var ses = astProp.Setter.Body.Statements.FirstOrNullObject() as ExpressionStatement;
+                var sie = ses.Expression as InvocationExpression;
+                var sta = sie.Target as MemberReferenceExpression;
+                var setter = sta.MemberName;
+                DecompilerContext.EliminatedProps[proptype + ".set_" + propDef.Name] = setter;
+            }
+        }
 
 		IndexerDeclaration ConvertPropertyToIndexer(PropertyDeclaration astProp, PropertyDefinition propDef)
 		{
@@ -1077,9 +1214,29 @@ namespace ICSharpCode.Decompiler.Ast
 		
 		public static IEnumerable<ParameterDeclaration> MakeParameters(IEnumerable<ParameterDefinition> paramCol, bool isLambda = false)
 		{
-			foreach(ParameterDefinition paramDef in paramCol) {
-				ParameterDeclaration astParam = new ParameterDeclaration();
-				astParam.AddAnnotation(paramDef);
+			foreach(ParameterDefinition paramDef in paramCol)
+			{
+                ParameterDeclaration astParam = new ParameterDeclaration();
+			    if (paramDef.ParameterType.Name.Contains("@Meta"))
+			    {
+                    // Delphi remove meta class reference
+                    astParam.Type = new PrimitiveType("object");
+                    astParam.Name = paramDef.Name;
+                    yield return astParam;
+			        continue;
+			    }
+                if (paramDef.ParameterType.IsNested && paramDef.ParameterType.IsValueType && paramDef.ParameterType.Name.StartsWith("_"))
+                {
+                    // Delphi dummy parameter for overloaded constructor
+                    //astParam.Type = new PrimitiveType("object");
+                    //astParam.Name = "_dummy_";
+                    //yield return astParam;
+                    continue;
+                }
+
+
+
+			    astParam.AddAnnotation(paramDef);
 				if (!(isLambda && paramDef.ParameterType.ContainsAnonymousType()))
 					astParam.Type = ConvertType(paramDef.ParameterType, paramDef);
 				astParam.Name = paramDef.Name;
@@ -1107,8 +1264,10 @@ namespace ICSharpCode.Decompiler.Ast
 					astParam.Attributes.Add(new AttributeSection(ConvertMarshalInfo(paramDef, module)));
 				}
 				if (astParam.ParameterModifier != ParameterModifier.Out) {
+#if NOTDELPHI
 					if (paramDef.IsIn)
 						astParam.Attributes.Add(new AttributeSection(CreateNonCustomAttribute(typeof(InAttribute), module)));
+#endif
 					if (paramDef.IsOut)
 						astParam.Attributes.Add(new AttributeSection(CreateNonCustomAttribute(typeof(OutAttribute), module)));
 				}
@@ -1378,6 +1537,36 @@ namespace ICSharpCode.Decompiler.Ast
 						// don't show the ParamArrayAttribute (it's converted to the 'params' modifier)
 						continue;
 					}
+                    if (customAttribute.AttributeType.Name.Equals("TSetElementTypeAttribute"))
+                    {
+                        var td = customAttributeProvider as TypeDefinition;
+                        if (td != null)
+                        {
+                            if (customAttribute.HasConstructorArguments)
+                            {
+                                foreach (var parameter in customAttribute.ConstructorArguments)
+                                {
+                                    Expression pv = ConvertArgumentValue(parameter);
+                                    TypeOfExpression toe = pv as TypeOfExpression;
+                                    if (toe != null)
+                                    {
+                                        // cannot rename globally here -> moved to AssemblyReader
+                                        // td.Name = "SetOf" + toe.FirstChild;
+                                        td.Attributes = TypeAttributes.Public;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        System.Diagnostics.Trace.TraceInformation("");
+                        //
+                    }
+                    else if (customAttribute.AttributeType.FullName.StartsWith("Borland.") || 
+                             customAttribute.AttributeType.Name.Equals("BrowsableAttribute"))
+                    {
+                        continue; // hide Delphi Attributes
+                    }
+
 					// if the method is async, remove [DebuggerStepThrough] and [Async
 					if (entityDecl != null && entityDecl.HasModifier(Modifiers.Async)) {
 						if (customAttribute.AttributeType.Name == "DebuggerStepThroughAttribute" && customAttribute.AttributeType.Namespace == "System.Diagnostics") {

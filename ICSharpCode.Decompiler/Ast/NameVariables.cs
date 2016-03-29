@@ -62,6 +62,12 @@ namespace ICSharpCode.Decompiler.Ast
 					nv.AddExistingName(v.Name);
 				} else if (v.OriginalVariable != null && context.Settings.UseDebugSymbols) {
 					string varName = v.OriginalVariable.Name;
+
+				    if (varName.Equals("Result")) // typical function return value name
+				        varName = "result";
+                    if (varName.Equals("Self")) // used inside WITH
+                        varName = "self";
+
 					if (string.IsNullOrEmpty(varName) || varName.StartsWith("V_", StringComparison.Ordinal) || !IsValidName(varName))
 					{
 						// don't use the name from the debug symbols if it looks like a generated name
@@ -320,7 +326,15 @@ namespace ICSharpCode.Decompiler.Ast
 				// remove the 'I' for interfaces
 				if (name.Length >= 3 && name[0] == 'I' && char.IsUpper(name[1]) && char.IsLower(name[2]))
 					name = name.Substring(1);
-				name = CleanUpVariableName(name);
+
+                // Delphi remove the 'T' for types
+                if (name.Length >= 3 && name[0] == 'T' && char.IsUpper(name[1]) && char.IsLower(name[2]))
+                    name = name.Substring(1);
+
+                if (name.StartsWith("DynSql") || name.StartsWith("Dynamic") || name.StartsWith("qry") || name.Contains("Query")) // Delphi
+			        name = "qry";
+
+                name = CleanUpVariableName(name);
 			}
 			return name;
 		}
@@ -340,7 +354,9 @@ namespace ICSharpCode.Decompiler.Ast
 			
 			if (name.Length == 0)
 				return "obj";
-			else
+			if (name.Equals(name.ToUpperInvariant()))
+                return name.ToLower(); // all uppercase -> lowercase
+            else
 				return char.ToLower(name[0]) + name.Substring(1);
 		}
 	}

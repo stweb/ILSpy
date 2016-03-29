@@ -20,6 +20,7 @@ using System;
 using System.Collections.Generic;
 using System.Threading;
 using ICSharpCode.Decompiler.Ast;
+using ICSharpCode.NRefactory.CSharp;
 using ICSharpCode.NRefactory.TypeSystem;
 using ICSharpCode.NRefactory.TypeSystem.Implementation;
 using Mono.Cecil;
@@ -60,6 +61,11 @@ namespace ICSharpCode.Decompiler
 		/// Used to pass variable names from a method to its anonymous methods.
 		/// </summary>
 		internal List<string> ReservedVariableNames = new List<string>();
+
+        /// <summary>
+        /// Eliminated properties (C# incompatible definition, e.g. Delphi indexed props)
+        /// </summary>
+        internal static Dictionary<string, string> EliminatedProps = new Dictionary<string, string>();
 		
 		public DecompilerContext Clone()
 		{

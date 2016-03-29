@@ -42,7 +42,8 @@ namespace ICSharpCode.Decompiler.Ast.Transforms
 			compilationUnit.AcceptVisitor(new FindRequiredImports(this), null);
 			
 			importedNamespaces.Add("System"); // always import System, even when not necessary
-			
+//		    importedNamespaces.Add("ShareIt.Core");
+
 			if (context.Settings.UsingDeclarations) {
 				// Now add using declarations for those namespaces:
 				foreach (string ns in importedNamespaces.OrderByDescending(n => n)) {

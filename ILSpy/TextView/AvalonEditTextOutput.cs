@@ -230,7 +230,7 @@ namespace ICSharpCode.ILSpy.TextView
 				new NewFolding {
 					StartOffset = this.TextLength,
 					Name = collapsedText,
-					DefaultClosed = defaultCollapsed
+//					DefaultClosed = defaultCollapsed
 				});
 		}
 		

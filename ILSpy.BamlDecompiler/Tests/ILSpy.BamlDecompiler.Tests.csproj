@@ -7,7 +7,7 @@
     <OutputType>Library</OutputType>
     <RootNamespace>ILSpy.BamlDecompiler.Tests</RootNamespace>
     <AssemblyName>ILSpy.BamlDecompiler.Tests</AssemblyName>
-    <TargetFrameworkVersion>v4.5</TargetFrameworkVersion>
+    <TargetFrameworkVersion>v4.5.2</TargetFrameworkVersion>
     <TargetFrameworkProfile>
     </TargetFrameworkProfile>
     <AllowUnsafeBlocks>False</AllowUnsafeBlocks>

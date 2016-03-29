@@ -210,7 +210,7 @@ namespace ICSharpCode.Decompiler.Ast
 					} else {
 						tryCatchStmt.CatchClauses.Add(
 							new Ast.CatchClause {
-								Type = AstBuilder.ConvertType(catchClause.ExceptionType),
+                                Type = catchClause.ExceptionType.FullName == "System.Object" ? new PrimitiveType("Exception") : AstBuilder.ConvertType(catchClause.ExceptionType),
 								VariableName = catchClause.ExceptionVariable == null ? null : catchClause.ExceptionVariable.Name,
 								Body = TransformBlock(catchClause)
 							}.WithAnnotation(catchClause.ExceptionVariable));
@@ -450,22 +450,26 @@ namespace ICSharpCode.Decompiler.Ast
 					case ILCode.Cgt_Un: {
 						// can also mean Inequality, when used with object references
 						TypeReference arg1Type = byteCode.Arguments[0].InferredType;
-						if (arg1Type != null && !arg1Type.IsValueType) goto case ILCode.Cne;
+					    if (arg1Type != null)
+					    {
+					        if (!arg1Type.IsValueType) goto case ILCode.Cne;
 
-						// when comparing signed integral values using Cgt_Un with 0
-						// the Ast should actually contain InEquality since "(uint)a > 0u" is identical to "a != 0"
-						if (arg1Type.IsSignedIntegralType())
-						{
-							var p = arg2 as Ast.PrimitiveExpression;
-							if (p != null && p.Value.IsZero()) goto case ILCode.Cne;
-						}
-
-						goto case ILCode.Cgt;
+					        // when comparing signed integral values using Cgt_Un with 0
+					        // the Ast should actually contain InEquality since "(uint)a > 0u" is identical to "a != 0"
+					        if (arg1Type.IsSignedIntegralType())
+					        {
+					            var p = arg2 as Ast.PrimitiveExpression;
+					            if (p != null && p.Value.IsZero()) goto case ILCode.Cne;
+					        }
+					    }
+					    goto case ILCode.Cgt;
 					}
 					case ILCode.Cle_Un: {
 						// can also mean Equality, when used with object references
 						TypeReference arg1Type = byteCode.Arguments[0].InferredType;
-						if (arg1Type != null && !arg1Type.IsValueType) goto case ILCode.Ceq;
+					    if (arg1Type != null)
+					    {
+					        if (!arg1Type.IsValueType) goto case ILCode.Ceq;
 
 						// when comparing signed integral values using Cle_Un with 0
 						// the Ast should actually contain Equality since "(uint)a <= 0u" is identical to "a == 0"
@@ -474,7 +478,7 @@ namespace ICSharpCode.Decompiler.Ast
 							var p = arg2 as Ast.PrimitiveExpression;
 							if (p != null && p.Value.IsZero()) goto case ILCode.Ceq;
 						}
-
+					    }
 						goto case ILCode.Cle;
 					}
 					case ILCode.Cle: return new Ast.BinaryOperatorExpression(arg1, BinaryOperatorType.LessThanOrEqual, arg2);

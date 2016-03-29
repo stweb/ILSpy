@@ -73,6 +73,8 @@
     <Compile Include="Ast\NRefactoryExtensions.cs" />
     <Compile Include="Ast\TextTokenWriter.cs" />
     <Compile Include="Ast\Transforms\AddCheckedBlocks.cs" />
+    <Compile Include="Ast\Transforms\AnalyzeMagicConstants.cs" />
+    <Compile Include="Ast\Transforms\AnalyzeMethodInvokation.cs" />
     <Compile Include="Ast\Transforms\CombineQueryExpressions.cs" />
     <Compile Include="Ast\Transforms\ContextTrackingVisitor.cs" />
     <Compile Include="Ast\Transforms\ConvertConstructorCallIntoInitializer.cs" />

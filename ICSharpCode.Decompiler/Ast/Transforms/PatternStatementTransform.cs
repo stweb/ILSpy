@@ -20,15 +20,28 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
-
 using ICSharpCode.Decompiler.ILAst;
 using ICSharpCode.NRefactory.CSharp;
 using ICSharpCode.NRefactory.CSharp.Analysis;
 using ICSharpCode.NRefactory.PatternMatching;
 using Mono.Cecil;
+using Expression = ICSharpCode.NRefactory.CSharp.Expression;
+using ExpressionStatement = ICSharpCode.NRefactory.CSharp.ExpressionStatement;
+using Modifiers = ICSharpCode.NRefactory.CSharp.Modifiers;
+using Statement = ICSharpCode.NRefactory.CSharp.Statement;
 
 namespace ICSharpCode.Decompiler.Ast.Transforms
 {
+    public static class ExpressionExtensions
+    {
+        public static T GetValue<T>(this PrimitiveExpression x)
+        {
+            if (x.Value is T)
+                return (T)x.Value;
+            return default(T);
+        }
+    }
+
 	/// <summary>
 	/// Finds the expanded form of using statements using pattern matching and replaces it with a UsingStatement.
 	/// </summary>
@@ -58,12 +71,14 @@ namespace ICSharpCode.Decompiler.Ast.Transforms
 		public override AstNode VisitExpressionStatement(ExpressionStatement expressionStatement, object data)
 		{
 			AstNode result;
-			if (context.Settings.UsingStatement)
-			{
-				result = TransformNonGenericForEach(expressionStatement);
+			if (context.Settings.UsingStatement) {
+                result = TransformDelphiUsing(expressionStatement);
+                if (result != null)
+                    return result;
+				result = TransformUsings(expressionStatement);
 				if (result != null)
 					return result;
-				result = TransformUsings(expressionStatement);
+				result = TransformNonGenericForEach(expressionStatement);
 				if (result != null)
 					return result;
 			}
@@ -103,8 +118,9 @@ namespace ICSharpCode.Decompiler.Ast.Transforms
 			AstNode simplifiedIfElse = SimplifyCascadingIfElseStatements(ifElseStatement);
 			if (simplifiedIfElse != null)
 				return simplifiedIfElse;
-			return base.VisitIfElseStatement(ifElseStatement, data);
-		}
+			
+			return TransformDelphiFor(ifElseStatement) ?? base.VisitIfElseStatement(ifElseStatement, data);		
+        }
 		
 		public override AstNode VisitPropertyDeclaration(PropertyDeclaration propertyDeclaration, object data)
 		{
@@ -157,9 +173,7 @@ namespace ICSharpCode.Decompiler.Ast.Transforms
 			};
 		}
 		
-		static readonly AstNode usingTryCatchPattern = new Choice {
-			{ "c#/vb",
-			new TryCatchStatement {
+		static readonly AstNode usingTryCatchPattern = new TryCatchStatement {
 			TryBlock = new AnyNode(),
 			FinallyBlock = new BlockStatement {
 				new Choice {
@@ -180,34 +194,166 @@ namespace ICSharpCode.Decompiler.Ast.Transforms
 					}
 				}.ToStatement()
 			}
-		}
-		},
-		{ "f#",
-			new TryCatchStatement {
-			TryBlock = new AnyNode(),
-			FinallyBlock =
-					new BlockStatement {
-						new ExpressionStatement(
-							new AssignmentExpression(left: new NamedNode("disposable", new IdentifierExpression(Pattern.AnyString)),
-														right: new AsExpression(expression: new NamedNode("ident", new IdentifierExpression(Pattern.AnyString)),
-																				type: new TypePattern(typeof(IDisposable))
-																				)
-							)
-						),
-						new IfElseStatement {
+		};
+
+
+        //assignment ... try .. finally
+        //{
+        //    object obj = favorite;
+        //    SysUtils.FreeAndNil(ref obj);
+        //    favorite = (obj as TFavorite);
+        //}
+        static Expression InvokeFreeAndNil()
+        {
+            return  new InvocationExpression (
+								new MemberReferenceExpression (
+                                    new TypeReferenceExpression(new SimpleType("SysUtils")),
+                                    "FreeAndNil"),
+								new AnyNode("ref"));
+        }
+
+        static Expression InvokeFree()
+        {
+            return new InvocationExpression(new MemberReferenceExpression(new AnyNode("obj"), "Free"));
+        }
+
+        static readonly AstNode delphiTryFreeAndNilPattern = new TryCatchStatement
+        {
+            TryBlock = new AnyNode(),
+            FinallyBlock = new BlockStatement
+            {
+                Statements = { new AnyNode("obj"), // TODO make more exact
+							   new ExpressionStatement(InvokeFreeAndNil()), 
+                               new AnyNode("set")  // TODO make more exact
+                }
+            }
+        };
+
+        static readonly AstNode delphiTryFreePattern = new TryCatchStatement
+        {
+            TryBlock = new AnyNode(),
+            FinallyBlock = new BlockStatement
+            {
+                Statements = { new ExpressionStatement(InvokeFree()) }
+            }
+        };
+		
+        //finally
+        //{
+        //    IDisposable disposable = tStringsEnumerator as IDisposable;
+        //    if (disposable != null)
+        //    {
+        //        disposable.Dispose();
+        //    }
+        //    tStringsEnumerator = null;
+        //}
+        static readonly AstNode delphiTryFinallyPattern = new TryCatchStatement
+        {
+            TryBlock = new AnyNode(),
+            FinallyBlock = new BlockStatement { 
+                Statements = { new AnyNode("assign"),
+                        new IfElseStatement {
 							Condition = new BinaryOperatorExpression(
-								new Backreference("disposable"),
+								new NamedNode("ident", new IdentifierExpression(Pattern.AnyString)),
 								BinaryOperatorType.InEquality,
 								new NullReferenceExpression()
 							),
 							TrueStatement = new BlockStatement {
-								new ExpressionStatement(InvokeDispose(new Backreference("disposable")))
+								new ExpressionStatement(InvokeDispose(new Backreference("ident")))
 							}
-						}
-					}
-				}
+						},
+                        new AnyNode("setnull")
+                }				
 			}
-		};
+        };
+
+        public Statement TransformDelphiUsing(ExpressionStatement node)
+        {
+            Match m1 = variableAssignPattern.Match(node);
+            if (!m1.Success) return null;
+            string variableName = m1.Get<IdentifierExpression>("variable").Single().Identifier;
+            var variableInit = m1.Get<AstNode>("initializer").Single();
+
+
+            var tryCatch = node.NextSibling as TryCatchStatement;
+            if (tryCatch == null) return null;
+            Match m2 = delphiTryFinallyPattern.Match(tryCatch);
+            if (!m2.Success)
+            {
+                Match m3 = delphiTryFreeAndNilPattern.Match(tryCatch);
+                if (!m3.Success)
+                {
+                    m3 = delphiTryFreePattern.Match(tryCatch);
+                    if (!m3.Success) return null;          
+                }
+
+                //var ident = m3.Get<IdentifierExpression>("obj").Single().Identifier;
+                var init = variableInit.ToString();
+                if (!(init.Contains("TDyn") || init.Contains("Stream")))  
+                {
+                    // TODO check if this is not using IDisposable
+                    var embeddedStatement = tryCatch.TryBlock.Detach();
+                    tryCatch.ReplaceWith(embeddedStatement);
+                    return embeddedStatement; 
+                }
+            }
+            else
+            {
+                var ident2 = m2.Get<IdentifierExpression>("ident").Single().Identifier;
+                if (!ident2.Equals("disposable"))
+                    return null;                
+            }
+            
+
+            //if (variableName != ident2)return null;
+
+            // There are two variants of the using statement:
+            // "using (var a = init)" and "using (expr)".
+            // The former declares a read-only variable 'a', and the latter declares an unnamed read-only variable
+            // to store the original value of 'expr'.
+            // This means that in order to introduce a using statement, in both cases we need to detect a read-only
+            // variable that is used only within that block.
+
+            if (HasAssignment(tryCatch, variableName, ignoreNullAssign: true))
+                return null;
+
+            VariableDeclarationStatement varDecl = FindVariableDeclaration(node, variableName);
+            if (varDecl == null || !(varDecl.Parent is BlockStatement))
+                return null;
+
+            // Validate that the variable is not used after the using statement:
+            if (!IsVariableValueUnused(varDecl, tryCatch))
+                return null;
+
+            node.Remove();
+
+            var usingStatement = new UsingStatement();
+            usingStatement.EmbeddedStatement = tryCatch.TryBlock.Detach();
+            tryCatch.ReplaceWith(usingStatement);
+
+            // If possible, we'll eliminate the variable completely:
+            if (usingStatement.EmbeddedStatement.Descendants.OfType<IdentifierExpression>().Any(ident => ident.Identifier == variableName))
+            {
+                // variable is used, so we'll create a variable declaration
+                usingStatement.ResourceAcquisition = new VariableDeclarationStatement
+                {
+                    Type = (AstType)varDecl.Type.Clone(),
+                    Variables = {
+						new VariableInitializer {
+							Name = variableName,
+							Initializer = m1.Get<Expression>("initializer").Single().Detach()
+						}.CopyAnnotationsFrom(node.Expression)
+							.WithAnnotation(m1.Get<AstNode>("variable").Single().Annotation<ILVariable>())
+					}
+                }.CopyAnnotationsFrom(node);
+            }
+            else
+            {
+                // the variable is never used; eliminate it:
+                usingStatement.ResourceAcquisition = m1.Get<Expression>("initializer").Single().Detach();
+            }
+            return usingStatement;
+        }
 		
 		public UsingStatement TransformUsings(ExpressionStatement node)
 		{
@@ -243,20 +389,9 @@ namespace ICSharpCode.Decompiler.Ast.Transforms
 			// Validate that the variable is not used after the using statement:
 			if (!IsVariableValueUnused(varDecl, tryCatch))
 				return null;
-
-			if (m2.Has("f#")) {
-				string variableNameDisposable = m2.Get<IdentifierExpression>("disposable").Single().Identifier;
-				VariableDeclarationStatement varDeclDisposable = FindVariableDeclaration(node, variableNameDisposable);
-				if (varDeclDisposable == null || !(varDeclDisposable.Parent is BlockStatement))
-					return null;
-
-				// Validate that the variable is not used after the using statement:
-				if (!IsVariableValueUnused(varDeclDisposable, tryCatch))
-					return null;
-			}
-
+			
 			node.Remove();
-
+			
 			UsingStatement usingStatement = new UsingStatement();
 			usingStatement.EmbeddedStatement = tryCatch.TryBlock.Detach();
 			tryCatch.ReplaceWith(usingStatement);
@@ -339,7 +474,7 @@ namespace ICSharpCode.Decompiler.Ast.Transforms
 		/// <summary>
 		/// Gets whether there is an assignment to 'variableName' anywhere within the given node.
 		/// </summary>
-		bool HasAssignment(AstNode root, string variableName)
+		bool HasAssignment(AstNode root, string variableName, bool ignoreNullAssign = false)
 		{
 			foreach (AstNode node in root.DescendantsAndSelf) {
 				IdentifierExpression ident = node as IdentifierExpression;
@@ -347,6 +482,10 @@ namespace ICSharpCode.Decompiler.Ast.Transforms
 					if (ident.Parent is AssignmentExpression && ident.Role == AssignmentExpression.LeftRole
 					    || ident.Parent is DirectionExpression)
 					{
+					    var ae = (AssignmentExpression) ident.Parent;
+					    if (ignoreNullAssign && ae.Right is NullReferenceExpression)
+					        continue;
+
 						return true;
 					}
 				}
@@ -602,6 +741,180 @@ namespace ICSharpCode.Decompiler.Ast.Transforms
 		}
 		#endregion
 		
+        #region for (Delphi)
+
+	    private static readonly IfElseStatement delphiForPattern = new IfElseStatement
+	    {
+            Condition = new BinaryOperatorExpression(
+                new NamedNode("stop", new IdentifierExpression(Pattern.AnyString)),
+                BinaryOperatorType.GreaterThanOrEqual, 
+                new NamedNode("counter", new IdentifierExpression(Pattern.AnyString))),
+	        TrueStatement = new BlockStatement
+	        {
+	            Statements = {
+                    new ExpressionStatement(new AssignmentExpression(new AnyNode("stop2"), 
+                        AssignmentOperatorType.Assign, new BinaryOperatorExpression(
+                            new Backreference("stop"), BinaryOperatorType.Add, new PrimitiveExpression(1)))), // stop2 = stop + 1;
+                    new WhileStatement { 
+                        Condition = new AnyNode("cond"), // additional condition, true or first nested if
+                        EmbeddedStatement = new BlockStatement
+                        {
+                            Statements = {
+					            new Repeat(new AnyNode("body")),
+                                new NamedNode("increment", new ExpressionStatement(
+                                    new AssignmentExpression {
+                                        Left = new Backreference("counter"), 
+                                        Operator = AssignmentOperatorType.Assign,
+                                        Right = new BinaryOperatorExpression(new Backreference("counter"), BinaryOperatorType.Add, new PrimitiveExpression(1)) 
+                                    })),
+					            new IfElseStatement {
+						            Condition = new AnyNode("condition"), // TODO check - should be if (!(counter != stop))
+						            TrueStatement = new BlockStatement
+						            {
+						                new AnyNode("exit")
+						            } //  break or return
+					            }
+				            }
+                        }
+                    },
+                    new Repeat(new AnyNode("post")) // e.g. result := true;
+	            }
+            }
+	    };
+
+	    private Statement NewComment(string text)
+	    {
+	        var type = new TypeReferenceExpression(new SimpleType("Logger"));
+	        return new InvocationExpression(new MemberReferenceExpression(type, "Todo"), new Expression[] {new PrimitiveExpression(text)});
+	        //return new CommentStatement(text);
+	    }
+
+        public AstNode TransformDelphiFor(IfElseStatement ifElse)
+        {
+            Match m = delphiForPattern.Match(ifElse);
+            if (!m.Success) return null;
+
+            var exit = m.Get<Statement>("exit").Single(); // break or return
+            if (!(exit is BreakStatement || exit is ReturnStatement || exit is GotoStatement))
+                throw new Exception("expected break, return or goto");
+
+            var newBody = new BlockStatement(); // if (cond) { ... }
+            foreach (var stmt in m.Get<Statement>("body"))
+                newBody.Add(stmt.Detach());
+
+            string label = null;
+            var cond = m.Get<Expression>("cond").Single();
+            var pe = cond as PrimitiveExpression;
+            if (pe == null)
+            {
+                // unwind Delphi optimization
+                var newBlock = new BlockStatement();
+                foreach (var stmt in m.Get<Statement>("post"))
+                    newBlock.Add(stmt.Detach());
+
+                newBlock.Add(new BreakStatement()); // TODO double check
+                newBlock.Add(NewComment("TODO - ILSpy check conversion logic"));
+
+                if (newBlock.Statements.Count > 1)
+                    Trace.TraceInformation("long post block");
+                newBody.Add(new IfElseStatement(new UnaryOperatorExpression(UnaryOperatorType.Not, cond.Detach()), newBlock));
+            }
+            else if (pe.GetValue<bool>() && exit is GotoStatement) // cond is "true" and exit is goto
+            {
+                // unwind Delphi optimization
+                var newBlock = new BlockStatement();
+                foreach (var stmt in m.Get<Statement>("post"))
+                    newBlock.Add(stmt.Detach());
+
+                label = (exit as GotoStatement).Label;
+                if (newBlock.Statements.Count > 1)
+                    Trace.TraceInformation("long post block " + label);
+
+                var ifelse = newBody.Statements.Last() as IfElseStatement;
+                // TODO Assert(ifElse.TrueStatement is BlockStatement && body = break;)
+                newBlock.Add(NewComment("ILSpy check conversion logic"));
+
+                if (ifelse == null) return null;
+                ifelse.TrueStatement = newBlock;
+            }
+
+            var counter = m.Get<IdentifierExpression>("counter").Single().Detach();
+            var stop = m.Get<IdentifierExpression>("stop").Single().Detach();
+            Expression stopper = stop;
+
+            // we ignore the stop2 variable (= stop + 1) and use a modified condition instead 
+            Expression init = new NullReferenceExpression();
+            var block = ifElse.Parent as BlockStatement;
+            var iname = counter.Identifier;
+            var sname = stop.Identifier;
+            foreach (var stmt in block.Statements.Reverse())
+            {
+                // inline counter var declaration
+                var es = stmt as ExpressionStatement;
+                if (es != null)
+                {
+                    var ae = es.Expression as AssignmentExpression;
+                    if (ae == null) continue;
+                    var ie = ae.Left as IdentifierExpression;
+                    if (ie == null) continue;
+
+                    if (ie.Identifier == iname)
+                    {
+                        var right = ae.Right as IdentifierExpression;
+                        if (right != null)
+                        {
+                            iname = right.Identifier;
+                            ae.Remove();                                
+                        }
+                        else 
+                        {
+                            init = ae.Right.Detach();
+                            ae.Remove();                                
+                        }
+                    }
+
+                    else if (ie.Identifier == sname)
+                    {
+                        var right = ae.Right as IdentifierExpression;
+                        if (right != null)
+                        {
+                            sname = right.Identifier;
+                            ae.Remove();
+                            stop.Identifier = sname;
+                        }
+                        else
+                        {
+                            stopper = ae.Right.Detach();
+                            Trace.TraceWarning("stop is not ident " + stopper);
+                            ae.Remove(); 
+                        }
+                    }
+                    continue;
+                }
+                var vd = stmt as VariableDeclarationStatement;
+                if (vd != null)
+                {
+                    vd.Variables.Remove(new VariableInitializer(counter.Identifier));
+                    break;
+                }
+                var ls = stmt as LabelStatement;
+                if (ls != null && ls.Label == label)
+                {
+                    ls.Remove();
+                }
+            }
+
+            // TODO - proper initialization - this doesn't have to be 0, but comes from outer scope
+            var forStatement = new ForStatement();
+            forStatement.Initializers.Add(new ExpressionStatement(new AssignmentExpression(counter, AssignmentOperatorType.Assign, init))); 
+            forStatement.Condition = new BinaryOperatorExpression(counter.Clone(), BinaryOperatorType.LessThanOrEqual, stopper);
+            forStatement.Iterators.Add(m.Get<ExpressionStatement>("increment").Single().Detach());
+            forStatement.EmbeddedStatement = newBody;
+            ifElse.ReplaceWith(forStatement);
+            return forStatement;
+        }
+        #endregion
+		
 		#region doWhile
 		static readonly WhileStatement doWhilePattern = new WhileStatement {
 			Condition = new PrimitiveExpression(true),
@@ -675,7 +988,7 @@ namespace ICSharpCode.Decompiler.Ast.Transforms
 					}
 				}
 			}};
-
+		
 		static readonly AstNode oldMonitorCallPattern = new ExpressionStatement(
 			new TypePattern(typeof(System.Threading.Monitor)).ToType().Invoke("Enter", new AnyNode("enter"))
 		);
@@ -721,7 +1034,7 @@ namespace ICSharpCode.Decompiler.Ast.Transforms
 			Expression enter, exit;
 			bool isV2 = AnalyzeLockV2(node, out enter, out exit);
 			if (isV2 || AnalyzeLockV4(node, out enter, out exit)) {
-				AstNode tryCatch = node.NextSibling;
+			AstNode tryCatch = node.NextSibling;
 				if (!exit.IsMatch(enter)) {
 					// If exit and enter are not the same, then enter must be "exit = ..."
 					AssignmentExpression assign = enter as AssignmentExpression;
@@ -758,7 +1071,7 @@ namespace ICSharpCode.Decompiler.Ast.Transforms
 				new IfElseStatement {
 					Condition = new BinaryOperatorExpression {
 						Left = new AnyNode("cachedDict"),
-						Operator = BinaryOperatorType.Equality,
+						Operator = BinaryOperatorType.Equality, // TODO what about equals with strings?
 						Right = new NullReferenceExpression()
 					},
 					TrueStatement = new AnyNode("dictCreation")
@@ -946,8 +1259,10 @@ namespace ICSharpCode.Decompiler.Ast.Transforms
 			PropertyDefinition cecilProperty = property.Annotation<PropertyDefinition>();
 			if (cecilProperty == null || cecilProperty.GetMethod == null || cecilProperty.SetMethod == null)
 				return null;
-			if (!(cecilProperty.GetMethod.IsCompilerGenerated() && cecilProperty.SetMethod.IsCompilerGenerated()))
+#if !DELPHI
+            if (!(cecilProperty.GetMethod.IsCompilerGenerated() && cecilProperty.SetMethod.IsCompilerGenerated()))
 				return null;
+#endif
 			Match m = automaticPropertyPattern.Match(property);
 			if (m.Success) {
 				FieldDefinition field = m.Get<AstNode>("fieldReference").Single().Annotation<FieldReference>().ResolveWithinSameModule();
@@ -1113,7 +1428,7 @@ namespace ICSharpCode.Decompiler.Ast.Transforms
 			},
 			FinallyBlock = new AnyNode()
 		};
-		
+
 		/// <summary>
 		/// Simplify nested 'try { try {} catch {} } finally {}'.
 		/// This transformation must run after the using/lock tranformations.
@@ -1125,6 +1440,14 @@ namespace ICSharpCode.Decompiler.Ast.Transforms
 				tryFinally.TryBlock = tryCatch.TryBlock.Detach();
 				tryCatch.CatchClauses.MoveTo(tryFinally.CatchClauses);
 			}
+			/* else // TODO eliminate variable if not used, eliminate Delphi catch processing
+			{
+			    foreach (CatchClause clause in tryFinally.CatchClauses)
+			    {
+			        Trace.TraceWarning(clause.Type.ToString());
+			    }
+			} */
+
 			// Since the tryFinally instance is not changed, we can continue in the visitor as usual, so return null
 			return null;
 		}
@@ -1143,9 +1466,9 @@ namespace ICSharpCode.Decompiler.Ast.Transforms
 							Condition = new AnyNode(),
 							TrueStatement = new AnyNode(),
 							FalseStatement = new OptionalNode(new AnyNode())
-						}
+	                    }
 					)
-				}
+                }
 			}
 		};
 

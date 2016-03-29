@@ -97,9 +97,11 @@ namespace ICSharpCode.Decompiler.Ast.Transforms
 					.Cast<VariableDeclarationStatement>().ToList();
 				if (variables.Count > 0) {
 					// remove old variable declarations:
-					foreach (VariableDeclarationStatement varDecl in variables) {
-						Debug.Assert(varDecl.Variables.Single().Initializer.IsNull);
-						varDecl.Remove();
+					foreach (VariableDeclarationStatement varDecl in variables)
+					{
+					    var init = varDecl.Variables.Single().Initializer;
+                        // commented to allow "string s = null;" if (!init.IsNull) Debug.Assert(init.IsNull);
+						varDecl.Remove(); // will be deferred to first definite assignment
 					}
 					if (daa == null) {
 						// If possible, reuse the DefiniteAssignmentAnalysis that was created for the parent block

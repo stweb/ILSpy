@@ -36,6 +36,7 @@ namespace ICSharpCode.Decompiler.Ast.Transforms
 				new DelegateConstruction(context),
 				new PatternStatementTransform(context),
 				new ReplaceMethodCallsWithOperators(context),
+				new PushNegation(), // for delphi				
 				new IntroduceUnsafeModifier(),
 				new AddCheckedBlocks(),
 				new DeclareVariables(context), // should run after most transforms that modify statements
@@ -45,7 +46,7 @@ namespace ICSharpCode.Decompiler.Ast.Transforms
 				new IntroduceExtensionMethods(context), // must run after IntroduceUsingDeclarations
 				new IntroduceQueryExpressions(context), // must run after IntroduceExtensionMethods
 				new CombineQueryExpressions(context),
-				new FlattenSwitchBlocks(), 
+				new FlattenSwitchBlocks()
 			};
 		}
 		
