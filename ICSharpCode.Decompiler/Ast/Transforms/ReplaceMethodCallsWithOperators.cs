@@ -21,6 +21,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
 using System.Reflection;
+using System.Text;
 using ICSharpCode.NRefactory.PatternMatching;
 using Mono.Cecil;
 using Ast = ICSharpCode.NRefactory.CSharp;
@@ -112,6 +113,37 @@ namespace ICSharpCode.Decompiler.Ast.Transforms
         
 	    #endregion
 
+	    private static string ReplaceFormat(string df)
+	    {
+	        df = df.Replace("%.2f", "%m"); // used below
+            //df = df.Replace("%*.*f", "%f"); // used below
+            var sb = new StringBuilder();
+	        int ix = 0;
+	        for (int index = 0; index < df.Length; index++)
+	        {
+	            char c = df[index];
+	            if (c == '%' && index < df.Count()-1)
+	            {
+	                index++;
+	                char c2 = Char.ToLower(df[index]);
+	                if (c2 == '%')
+	                    sb.Append(c2);
+                    else if (c2 == 'm')
+                        sb.Append('{').Append(ix++).Append(":0.00}");
+                    else if (c2 == 's' || c2 == 'd' || c2 == 'f')
+                        sb.Append('{').Append(ix++).Append('}');
+                    else
+                    {
+                        Trace.TraceWarning(df);
+                    }
+	            }
+	            else
+	            {
+	                sb.Append(c);
+	            }
+	        }
+	        return sb.ToString();
+	    }
 
 	    internal static void ProcessInvocationExpression(InvocationExpression invocationExpression)
 		{
@@ -488,7 +520,7 @@ namespace ICSharpCode.Decompiler.Ast.Transforms
                 var tre = mre.Target as TypeReferenceExpression; // handle ExceptionHelper -> Exception
 
                 var fmte = (arguments[1] as PrimitiveExpression).Value as string;
-                var fmt = fmte.Replace("%s", "{0}").Replace("%d", "{0}"); // TODO
+                var fmt = ReplaceFormat(fmte); //.Replace("%s", "{0}").Replace("%d", "{0}"); // TODO
                 invocationExpression.Arguments.Clear(); // detach arguments from invocationExpression
                 var arg = arguments[2] as ArrayCreateExpression;
                 List<Expression> items = arg.Initializer.Elements.ToList();
